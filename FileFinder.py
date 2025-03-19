@@ -8,8 +8,9 @@ from datetime import datetime
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import logging
-from datetime import datetime
+import json
 
+CONFIG_FILE = 'config.json'
 TEMP_DIR = os.path.join(os.getenv('TEMP'), 'FileFinder')
 if not os.path.exists(TEMP_DIR):
     os.makedirs(TEMP_DIR)
@@ -43,25 +44,18 @@ def open_executable_directory():
         messagebox.showerror("Ошибка", f"Ошибка открытия папки {exe_dir}: {e}")
 
 
-def analyze_jar_file(file_path):
-    """Анализ содержимого .jar файла."""
+def check_jar_for_suspicious_strings(file_path, suspicious_keywords):
+    """Проверка содержимого .jar файла на подозрительные строки."""
     try:
-        suspicious_keywords = ["malware", "trojan", "backdoor", "untrusted", "exploit"]
-        
-        # Проверяем на известные подозрительные файлы по их именам
         with zipfile.ZipFile(file_path, 'r') as jar_file:
             for file in jar_file.namelist():
-                if any(keyword in file.lower() for keyword in ["xray", "baritone", "meteorclient", "aristois"]):
-                    return True
-
-        # Проверяем содержимое .jar файла на подозрительные строки
-        result = check_jar_for_suspicious_strings(file_path, suspicious_keywords)
-        if result:
-            return True
-
+                with jar_file.open(file) as f:
+                    content = f.read().decode('utf-8', errors='ignore')
+                    if any(keyword in content.lower() for keyword in suspicious_keywords):
+                        return True
         return False
     except Exception as e:
-        logger.error(f"Ошибка анализа файла {file_path}: {e}")
+        logger.error(f"Ошибка проверки содержимого .jar файла {file_path}: {e}")
         return False
 
 
@@ -90,6 +84,10 @@ THEMES = {
 }
 
 current_theme = 'light'  # По умолчанию светлая тема
+
+configS = {
+    'theme': 'light'
+}
 
 def apply_theme(widget, theme):
     """Применить тему к виджету."""
@@ -261,7 +259,7 @@ def find_minecraft_directory():
     home_dir = os.path.expanduser("~")
     return os.path.join(home_dir, 'AppData', 'Roaming', '.minecraft')
 
-def on_check():
+async def on_check():
     """Запуск проверки на читы."""
     try:
         listbox.delete(0, END)  # Очищаем список перед новой проверкой
@@ -280,11 +278,11 @@ def on_check():
             'detection', 'player highlighter'
         ]
 
-        folder_keywords = ['impact', 'cheat', 'hacks', 'aristois', 'meteorclient']
+        folder_keywords = ['impact', 'cheat', 'hacks', 'aristois', 'meteorclient', 'hack']
         blacklisted_folders = ['grossjava9hacks']
 
-        found_files = find_files_by_keywords(root_dir, keywords)
-        found_folders = find_folders_by_keywords(root_dir, folder_keywords, blacklisted_folders)
+        found_files = await find_files_by_keywords_async(root_dir, keywords)
+        found_folders = await find_folders_by_keywords_async(root_dir, folder_keywords, blacklisted_folders)
 
         total_cheats = 0
 
@@ -296,7 +294,7 @@ def on_check():
         # Обработка файлов
         if found_files:
             for file_path in found_files:
-                if analyze_file(file_path):
+                if await analyze_file_async(file_path):
                     listbox.insert(END, f"Файл: {file_path} (чит)")
                     total_cheats += 1
                 else:
@@ -357,6 +355,7 @@ def on_select(event):
 
 def show_help():
     """Показать окно помощи."""
+    global help_window  # Declare help_window as global
     help_window = tk.Toplevel(root)
     help_window.title("Инструкция")
     help_window.geometry("600x300")  # Размер окна
@@ -385,7 +384,7 @@ def show_settings():
     apply_theme(settings_window, current_theme)
 
     def toggle_theme():
-        """Переключить тему."""
+        """Toggle the theme."""
         global current_theme
         if dark_theme_var.get():
             current_theme = 'dark'
@@ -393,7 +392,7 @@ def show_settings():
             current_theme = 'light'
         apply_theme(root, current_theme)
         apply_theme(settings_window, current_theme)
-        if 'help_window' in globals() and help_window is not None:  # Проверяем, открыт ли help_window
+        if 'help_window' in globals() and help_window is not None:
             apply_theme(help_window, current_theme)
 
     def open_executable_location():
@@ -421,12 +420,13 @@ def show_settings():
     open_location_button = tk.Button(settings_window, text="Открыть местоположение файла", command=open_executable_location, bg=THEMES[current_theme]['button'], fg=THEMES[current_theme]['text'], font=('Arial', 12), bd=0)
     open_location_button.pack(pady=10)
 
-    tk.Label(settings_window, text="Программа не сохраняет настройки", fg=THEMES[current_theme]['text'], bg=THEMES[current_theme]['background'], font=('Arial', 10)).pack(pady=10)
+    save_button = tk.Button(settings_window, text="Сохранить изменения", command=save_config, bg=THEMES[current_theme]['button'], fg=THEMES[current_theme]['text'], font=('Arial', 12), bd=0)
+    save_button.pack(pady=10)
 
 
 def open_website():
     """Открыть веб-сайт."""
-    webbrowser.open("https://mutetds.ru/filefinder")  # Замените на ваш сайт
+    webbrowser.open("https://filefinder.mutetds.ru")  # Замените на ваш сайт
 
 def show_history():
     """Показать окно истории запусков."""
@@ -461,6 +461,23 @@ def start_check():
     """Запуск проверки на читы в асинхронном режиме."""
     asyncio.run(on_check())
 
+def load_config():
+    """Load configuration from the config file and apply it."""
+    global current_theme
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r') as conf:
+            config = json.load(conf)
+            current_theme = config.get('theme', 'light')
+            apply_theme(root, current_theme)
+    else:
+        save_config()  # Save default config if not exists
+
+def save_config():
+    """Save current configuration to the config file."""
+    configS['theme'] = current_theme
+    with open(CONFIG_FILE, 'w') as conf:
+        json.dump(configS, conf, indent=4)
+    logger.info('Configuration saved successfully')
 
 # Создаем GUI
 root = tk.Tk()
@@ -468,6 +485,7 @@ root.title("FileFinder v1.0")
 root.geometry("800x400")  # Размер окна
 apply_theme(root, current_theme)  # Применяем тему к основному окну
 root.minsize(width=800, height=400)
+load_config()
 
 frame_left = tk.Frame(root, bg=THEMES[current_theme]['background'])
 frame_left.pack(side=LEFT, fill=BOTH, expand=True, padx=10, pady=10)
